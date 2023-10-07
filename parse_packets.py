@@ -1,11 +1,10 @@
 import json
 import struct
-from lz4.frame import compress, decompress
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
 import codecs
 import requests
 import struct
+from nativeipc import Cipher
+from tests import test_reencryption
 
 
 def unpack_cshead(data, endianess='>', xd=False): # INCOMING packets are marked by >
@@ -58,12 +57,12 @@ codecs.register_error("strict", codecs.ignore_errors)
 # https://soundcloud.com/maikaii/kyoshin
 
 
-# packets = json.loads(open('packets2.json', 'rb').read())
-packets = requests.get("http://127.0.0.1:8081/flows/4ce993e9-0afa-4739-ba0f-f03b4d77063b/messages/content/Auto.json").json() # get packets straight from mitmproxy
+packets = json.loads(open('packets.json', 'rb').read())
+# packets = requests.get("http://127.0.0.1:8081/flows/4ce993e9-0afa-4739-ba0f-f03b4d77063b/messages/content/Auto.json").json() # get packets straight from mitmproxy
 
 i = 0
 
-cipher = AES.new("1234567812345678".encode(), AES.MODE_CBC, b'\00' * AES.block_size)
+cipher = Cipher(b"1234567812345678")
 
 for packet in packets:
     data = ''.join([line[1][1] for line in packet['lines']]).replace(" ", "")
@@ -79,9 +78,8 @@ for packet in packets:
 
     if i == 2: # second packet - response to handshake
         encrypted_cooler = raw_data[-64:]
-        key = cipher.decrypt(encrypted_cooler)[12:12+32]
-        cipher = AES.new(key[:16], AES.MODE_CBC, b'\00' * AES.block_size)
-        print("cipher updated: " + key.decode())
+        cipher.key = cipher.decrypt(encrypted_cooler)[12:12+32]
+        print("cipher updated: " + cipher.key.decode())
 
 
     packet = raw_data
@@ -89,17 +87,11 @@ for packet in packets:
     lenk = len(raw_data)
 
     if state == "2":
-        try:
-            raw = cipher.decrypt(pad(raw_data[4:], 16))
-            packet = bytearray(raw_data[:4] + raw)
-            for i in range(0, 40, 2):
-                pass
-                # packet[i] = (packet[i] - 8) % 16
-            lenk = len(raw)
-            decrypted = True
-        except Exception as e:
-            print("siusiak: " + str(e) + " " + str((len(raw_data) - 4) % 16))
-            pass
+        test_reencryption(cipher, raw_data)
+        raw = cipher.decrypt(raw_data[4:])
+        packet = bytearray(raw_data[:4] + raw)
+        lenk = len(raw)
+        decrypted = True
 
 
     print((">out(from game)" if sent_from_game else "<in(from server) ") + " type: " + ("protobuf" if state == "1" else "encrypted") + f" (len: {lenk})")
@@ -107,7 +99,7 @@ for packet in packets:
     
     try:
         if sent_from_game:
-            header = unpack_cshead(packet, xd=True)
+            header = unpack_cshead(packet)
         else:
             header = unpack_cshead(packet)
         print("header:", header)
